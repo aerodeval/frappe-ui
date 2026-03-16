@@ -25,6 +25,7 @@
         :side="placementSide"
         :align="placementAlign"
         :sideOffset="offset"
+        :collision-padding="collisionPadding"
         :style="{
           minWidth: matchTargetWidth
             ? 'var(--reka-popover-trigger-width)'
