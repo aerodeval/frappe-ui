@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, useAttrs, useSlots } from 'vue'
 import { usePopoverMotion } from '../../composables/usePopoverMotion'
+import { useInputLabeling } from '../../composables/useInputLabeling'
 import { useEmptyValueMapping } from '../shared/selection/useEmptyValueMapping'
 import type {
   SelectNormalizedOption,
@@ -8,8 +9,15 @@ import type {
   SelectOptionValue,
   SelectProps,
   SelectSlots,
+  SelectTriggerSlotProps,
 } from './types'
 import ItemListRow from '../ItemListRow/ItemListRow.vue'
+import {
+  InputDescription,
+  InputError,
+  InputLabel,
+  LabelingWrapper,
+} from '../InputLabeling'
 import {
   SelectContent,
   SelectItem,
@@ -53,15 +61,42 @@ const props = withDefaults(defineProps<SelectProps>(), {
 const attrs = useAttrs()
 const slots = useSlots()
 
-const formAttrKeys = ['name', 'required', 'autocomplete'] as const
+const {
+  inputId,
+  labelId,
+  descriptionId,
+  errorMessageId,
+  describedBy,
+  hasError,
+  errorLines,
+  showDescription,
+} = useInputLabeling(props, {
+  size: () => props.size,
+  variant: () => props.variant,
+  disabled: () => props.disabled,
+})
+
+const hasLabeling = computed(() => {
+  return Boolean(
+    props.label ||
+      props.description ||
+      hasError.value ||
+      slots.label ||
+      slots.description,
+  )
+})
+
+const formAttrKeys = ['name', 'autocomplete'] as const
 
 const { motion: contentMotion, onPointerDown: markPointerDown } =
   usePopoverMotion(open)
 
 const rootAttrs = computed(() => {
-  return Object.fromEntries(
+  const out: Record<string, unknown> = Object.fromEntries(
     formAttrKeys.filter((key) => key in attrs).map((key) => [key, attrs[key]]),
   )
+  if (props.required) out.required = true
+  return out
 })
 
 const triggerAttrs = computed(() => {
@@ -69,7 +104,6 @@ const triggerAttrs = computed(() => {
     class: _class,
     style: _style,
     name: _name,
-    required: _required,
     autocomplete: _autocomplete,
     ...rest
   } = attrs
@@ -146,7 +180,34 @@ const selectedOption = computed(() => {
   )
 })
 
+function clearSelection() {
+  model.value = undefined
+}
+
+// Shared shape for the #trigger, #prefix, and #suffix slots. `clearSelection`
+// is exposed alongside the read-only fields so consumers can wire a clear
+// affordance without managing the model themselves.
+const triggerSlotProps = computed<SelectTriggerSlotProps>(() => ({
+  open: open.value,
+  disabled: Boolean(props.disabled),
+  selectedOption: selectedOption.value,
+  displayValue: displayValue.value,
+  clearSelection,
+}))
+
+function isBlank(value: unknown) {
+  return value === '' || value === null || value === undefined
+}
+
+const showPlaceholderForSelected = computed(() => {
+  if (!selectedOption.value) return false
+  return (
+    isBlank(selectedOption.value.value) && isBlank(selectedOption.value.label)
+  )
+})
+
 const displayValue = computed(() => {
+  if (showPlaceholderForSelected.value) return props.placeholder
   return selectedOption.value?.label || ''
 })
 
@@ -169,20 +230,47 @@ defineSlots<SelectSlots>()
 </script>
 
 <template>
-  <SelectRoot v-model="internalModel" v-model:open="open" v-bind="rootAttrs">
+  <LabelingWrapper
+    :enabled="hasLabeling"
+    :wrapper-class="['space-y-1.5', attrs.class as any]"
+    :wrapper-style="attrs.style as any"
+  >
+    <InputLabel
+      v-if="label || $slots.label"
+      :id="labelId"
+      :for-id="inputId"
+      :label="label"
+      :required="required"
+      class="text-p-sm font-medium text-ink-gray-7"
+    >
+      <template v-if="$slots.label" #default="slotProps">
+        <slot name="label" v-bind="slotProps" />
+      </template>
+    </InputLabel>
+    <SelectRoot v-model="internalModel" v-model:open="open" v-bind="rootAttrs">
     <SelectTrigger
-      :id="id"
+      :id="inputId"
       data-slot="trigger"
       v-bind="triggerAttrs"
-      :class="[triggerClasses, attrs.class]"
-      :style="attrs.style"
+      :class="[
+        triggerClasses,
+        hasLabeling ? 'w-full' : null,
+        hasLabeling ? null : (attrs.class as any),
+      ]"
+      :style="hasLabeling ? null : (attrs.style as any)"
       :disabled="disabled"
+      :aria-invalid="hasError || undefined"
+      :aria-errormessage="hasError ? errorMessageId : undefined"
+      :aria-describedby="describedBy"
+      :aria-required="required || undefined"
+      :data-invalid="hasError ? 'true' : undefined"
+      :data-required="required ? 'true' : undefined"
       @pointerdown="markPointerDown"
     >
       <template v-if="$slots.trigger">
         <slot
           name="trigger"
-          v-bind="{ open, disabled: !!disabled, selectedOption, displayValue }"
+          v-bind="triggerSlotProps"
         />
         <div
           data-slot="trigger-value"
@@ -195,10 +283,13 @@ defineSlots<SelectSlots>()
           <SelectValue
             :placeholder="placeholder"
             class="max-w-full truncate opacity-0"
+            :class="{ 'text-ink-gray-4': showPlaceholderForSelected }"
           >
-            <template v-if="selectedOption">{{
-              selectedOption.label
-            }}</template>
+            <template v-if="selectedOption">
+              {{
+                showPlaceholderForSelected ? placeholder : selectedOption.label
+              }}
+            </template>
           </SelectValue>
         </div>
       </template>
@@ -213,22 +304,32 @@ defineSlots<SelectSlots>()
             3. not selected + `#prefix` slot → user's placeholder affordance.
         -->
         <template v-if="selectedOption && slots['item-prefix']">
-          <slot name="item-prefix" v-bind="{ option: selectedOption }" />
+          <slot
+            name="item-prefix"
+            v-bind="{ item: selectedOption, option: selectedOption }"
+          />
         </template>
         <OptionIcon
           v-else-if="selectedOption?.icon"
           :icon="selectedOption.icon"
         />
-        <slot v-else name="prefix" />
+        <slot
+          v-else
+          name="prefix"
+          v-bind="triggerSlotProps"
+        />
 
-        <div class="grid min-w-0 text-left">
+        <div class="grid min-w-0 text-left truncate">
           <SelectValue
             :placeholder="placeholder"
             class="col-start-1 row-start-1 max-w-full truncate"
+            :class="{ 'text-ink-gray-4': showPlaceholderForSelected }"
           >
-            <template v-if="selectedOption">{{
-              selectedOption.label
-            }}</template>
+            <template v-if="selectedOption">
+              {{
+                showPlaceholderForSelected ? placeholder : selectedOption.label
+              }}
+            </template>
           </SelectValue>
           <span
             aria-hidden="true"
@@ -237,7 +338,10 @@ defineSlots<SelectSlots>()
           />
         </div>
 
-        <slot name="suffix">
+        <slot
+          name="suffix"
+          v-bind="triggerSlotProps"
+        >
           <span class="lucide-chevron-down ml-auto size-4 shrink-0 text-ink-gray-4" />
         </slot>
       </template>
@@ -254,9 +358,9 @@ defineSlots<SelectSlots>()
         <div
           data-slot="content-body"
           :data-motion="contentMotion"
-          class="overflow-hidden rounded-lg bg-surface-modal shadow-2xl ring-1 ring-black ring-opacity-5 will-change-[opacity,transform] origin-[var(--reka-select-content-transform-origin)]"
+          class="flex flex-col overflow-hidden rounded-lg bg-surface-modal shadow-2xl ring-1 ring-black ring-opacity-5 will-change-[opacity,transform] origin-[var(--reka-select-content-transform-origin)]"
         >
-          <SelectViewport class="flex flex-col p-1">
+          <SelectViewport class="flex min-h-0 flex-col p-1">
             <div
               v-if="!selectOptions.length"
               data-slot="empty"
@@ -299,7 +403,7 @@ defineSlots<SelectSlots>()
                     <slot
                       v-if="slots['item-prefix']"
                       name="item-prefix"
-                      v-bind="{ option: internalOption.option }"
+                      v-bind="{ item: internalOption.option, option: internalOption.option }"
                     />
                     <OptionIcon
                       v-else-if="internalOption.option.icon"
@@ -321,16 +425,16 @@ defineSlots<SelectSlots>()
                           slots[getOptionSlotName(internalOption.option)!]
                         "
                         :name="getOptionSlotName(internalOption.option)!"
-                        v-bind="{ option: internalOption.option }"
+                        v-bind="{ item: internalOption.option, option: internalOption.option }"
                       />
                       <slot
                         v-else
                         name="item-label"
-                        v-bind="{ option: internalOption.option }"
+                        v-bind="{ item: internalOption.option, option: internalOption.option }"
                       >
                         <slot
                           name="option"
-                          v-bind="{ option: internalOption.option }"
+                          v-bind="{ item: internalOption.option, option: internalOption.option }"
                         >
                           <div class="truncate">
                             {{ internalOption.option.label }}
@@ -349,7 +453,7 @@ defineSlots<SelectSlots>()
                   <template #suffix>
                     <slot
                       name="item-suffix"
-                      v-bind="{ option: internalOption.option }"
+                      v-bind="{ item: internalOption.option, option: internalOption.option }"
                     />
                     <SelectItemIndicator
                       class="ml-1 inline-flex items-center justify-center"
@@ -360,15 +464,27 @@ defineSlots<SelectSlots>()
                 </ItemListRow>
               </SelectItem>
             </template>
-
-            <div v-if="$slots.footer" data-slot="footer">
-              <slot name="footer" />
-            </div>
           </SelectViewport>
+
+          <div v-if="$slots.footer" data-slot="footer">
+            <slot
+              name="footer"
+              v-bind="{ selectedOption, clearSelection }"
+            />
+          </div>
         </div>
       </SelectContent>
     </SelectPortal>
   </SelectRoot>
+    <InputDescription
+      v-if="showDescription || $slots.description"
+      :id="descriptionId"
+      :description="description"
+    >
+      <slot v-if="$slots.description" name="description" />
+    </InputDescription>
+    <InputError v-if="hasError" :id="errorMessageId" :lines="errorLines" />
+  </LabelingWrapper>
 </template>
 
 <style scoped>
@@ -395,5 +511,4 @@ defineSlots<SelectSlots>()
   white-space: pre;
   visibility: hidden;
 }
-
 </style>

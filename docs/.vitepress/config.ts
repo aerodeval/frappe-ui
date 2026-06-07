@@ -2,10 +2,14 @@ import { defineConfig } from 'vitepress'
 import { lucideIcons } from '../../vite/lucideIcons'
 import path from 'path'
 import { meta } from './meta'
-import { getComponentItems } from './utils'
+import { getComponentItems, getFrappeItems } from './utils'
 import { transformerStyleToClass } from '@shikijs/transformers'
 import componentTransformer from './plugins/componentTransformer'
+import colocatedComponentDocs, {
+  syncColocatedComponentDocs,
+} from './plugins/colocatedComponentDocs'
 import fs from 'fs'
+import { execSync } from 'child_process'
 
 // needed for transforming shiki inline styles to classes
 const toClass = transformerStyleToClass({
@@ -14,13 +18,43 @@ const toClass = transformerStyleToClass({
 
 const base = process.env.VITEPRESS_BASE || '/'
 
+const isDev = process.env.NODE_ENV !== 'production'
+let devBranch = ''
+if (isDev) {
+  try {
+    devBranch = execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd: path.resolve(__dirname, '../..'),
+    })
+      .toString()
+      .trim()
+  } catch {}
+}
+const devTitle = devBranch ? `[${devBranch}] ${meta.name}` : meta.name
+
+// Generate proxy files for colocated component docs before VitePress
+// scans srcDir. The Vite plugin below keeps them in sync during dev.
+syncColocatedComponentDocs()
+
+// shiki.css is written at buildEnd for dev-mode imports, but the
+// production CSS bundle is finalized by Vite *before* markdown
+// processing runs — so the bundle never picks up the generated
+// classes. We inject the collected styles into each page's <head>
+// via transformHead below to side-step that timing. Still write the
+// stub here so theme/index.ts's eager import resolves on fresh
+// checkouts.
+const shikiCssPath = path.resolve(__dirname, '../css/shiki.css')
+if (!fs.existsSync(shikiCssPath)) {
+  fs.mkdirSync(path.dirname(shikiCssPath), { recursive: true })
+  fs.writeFileSync(shikiCssPath, '/* Auto-generated on build-time */\n', 'utf-8')
+}
+
 export default defineConfig({
   base,
   srcDir: 'content',
   lastUpdated: true,
-  title: meta.name,
+  title: devTitle,
   description: meta.description,
-  titleTemplate: meta.name,
+  titleTemplate: devTitle,
   markdown: {
     theme: {
       dark: 'tokyo-night',
@@ -33,6 +67,8 @@ export default defineConfig({
   },
   cleanUrls: true,
   head: [
+    // LLM-friendly docs index — https://llmstxt.org
+    ['link', { rel: 'alternate', type: 'text/markdown', href: '/llms.txt' }],
     // newsreader font
     ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
     [
@@ -87,6 +123,7 @@ export default defineConfig({
   ],
   themeConfig: {
     componentList: getComponentItems(),
+    frappeList: getFrappeItems(),
     outline: [2, 3],
     logo: '/logo.svg',
     search: { provider: 'local' },
@@ -100,18 +137,47 @@ export default defineConfig({
     ],
   },
   vite: {
-    plugins: [lucideIcons()],
+    plugins: [lucideIcons(), colocatedComponentDocs()],
+    define: {
+      __DEV_BRANCH__: JSON.stringify(devBranch),
+    },
     resolve: {
       alias: {
         '@/components': path.resolve(__dirname, '../components/'),
+        'frappe-ui/frappe': path.resolve(__dirname, '../../frappe'),
+        '@components': path.resolve(__dirname, '../../src/components'),
+        '@molecules': path.resolve(__dirname, '../../src/molecules'),
+        '@utils': path.resolve(__dirname, '../../src/utils'),
+        '@composables': path.resolve(__dirname, '../../src/composables'),
+        'frappe-ui/editor': path.resolve(__dirname, '../../src/molecules/editor'),
         'frappe-ui': path.resolve(__dirname, '../../src'),
         'dayjs/esm': 'dayjs',
       },
     },
   },
+  transformHead: () => {
+    const css = toClass.getCSS()
+    if (!css) return []
+    return [['style', { 'data-shiki': '' }, css]]
+  },
+  transformPageData() {
+    // Dev mode only — buildEnd doesn't run while `vitepress dev` is up, so
+    // theme/index.ts's eager `import '../../css/shiki.css'` would stay empty
+    // on a fresh checkout and code blocks would render unstyled. Write the
+    // collected CSS after each markdown page is processed; Vite's file
+    // watcher then HMRs the import.
+    if (process.env.NODE_ENV === 'production') return
+    const css = toClass.getCSS()
+    if (!css) return
+    const next = '/* Auto-generated on build-time */\n\n' + css
+    try {
+      const current = fs.readFileSync(shikiCssPath, 'utf-8')
+      if (current === next) return
+    } catch {}
+    fs.writeFileSync(shikiCssPath, next, 'utf-8')
+  },
   buildEnd: async () => {
     const str = '/* Auto-generated on build-time */ \n\n ' + toClass.getCSS()
-    const cssPath = path.resolve(__dirname, '../css/shiki.css')
-    await fs.promises.writeFile(cssPath, str, 'utf-8')
+    await fs.promises.writeFile(shikiCssPath, str, 'utf-8')
   },
 })

@@ -1,5 +1,6 @@
-import { h } from 'vue'
+import { defineComponent, h, ref } from 'vue'
 import Combobox from './Combobox.vue'
+import Dialog from '../Dialog/Dialog.vue'
 
 const fruits = ['Apple', 'Mango', 'Cherry']
 
@@ -666,6 +667,129 @@ describe('Combobox', () => {
         .first()
         .find('[data-cy="tpl-prefix"]')
         .should('exist')
+    })
+  })
+
+  // Regression: a Dialog's trapped FocusScope used to steal focus from the
+  // portaled popover, so the in-popover search input couldn't be focused or
+  // typed into. The FocusScope inside ComboboxContent pushes onto reka's
+  // focus-scope stack on open and pauses the dialog's trap.
+  describe('inside a Dialog', () => {
+    it('focuses and accepts typing in the popover search input (button mode)', () => {
+      const Wrapper = defineComponent({
+        setup() {
+          return { open: ref(true) }
+        },
+        render() {
+          return h(
+            Dialog,
+            { open: this.open, title: 'Pick' },
+            {
+              default: () =>
+                h(Combobox, {
+                  options: fruits,
+                  trigger: 'button',
+                  placeholder: 'Pick',
+                }),
+            },
+          )
+        },
+      })
+
+      cy.mount(Wrapper)
+
+      cy.get('[role=dialog]').should('exist')
+      cy.get('[data-slot="trigger"]').click()
+
+      cy.get('[data-slot="content-search"] [role="combobox"]')
+        .should('be.focused')
+        .type('ma')
+
+      cy.get('[role="option"]')
+        .should('have.length', 1)
+        .and('contain.text', 'Mango')
+    })
+  })
+
+  describe('shared labeling contract', () => {
+    it('renders label and links it to the input via for/id', () => {
+      cy.mount(Combobox, {
+        props: { options: fruits, label: 'Fruit' },
+      })
+      cy.get('[role="combobox"]').then(($input) => {
+        const id = $input.attr('id')!
+        cy.get(`label[for="${id}"]`).should('contain.text', 'Fruit')
+      })
+    })
+
+    it('renders description and wires aria-describedby on input', () => {
+      cy.mount(Combobox, {
+        props: {
+          options: fruits,
+          label: 'Fruit',
+          description: 'Type to filter.',
+        },
+      })
+      cy.get('[role="combobox"]').then(($input) => {
+        const id = $input.attr('id')!
+        const describedBy = $input.attr('aria-describedby')!
+        expect(describedBy).to.equal(`${id}-description`)
+        cy.get(`#${id}-description`).should('contain.text', 'Type to filter.')
+      })
+    })
+
+    it('renders error with aria-invalid + aria-errormessage and suppresses description', () => {
+      cy.mount(Combobox, {
+        props: {
+          options: fruits,
+          label: 'Fruit',
+          description: 'helper',
+          error: 'Required',
+        },
+      })
+      cy.get('[role="combobox"]')
+        .should('have.attr', 'aria-invalid', 'true')
+        .then(($input) => {
+          const id = $input.attr('id')!
+          expect($input.attr('aria-errormessage')).to.equal(`${id}-error`)
+          cy.get(`#${id}-error`).should('contain.text', 'Required')
+          cy.get(`#${id}-description`).should('not.exist')
+        })
+    })
+
+    it('renders required indicator and forwards aria-required', () => {
+      cy.mount(Combobox, {
+        props: { options: fruits, label: 'Fruit', required: true },
+      })
+      cy.get('[role="combobox"]').should('have.attr', 'aria-required', 'true')
+      cy.contains('label', 'Fruit').within(() => {
+        cy.get('span[aria-hidden="true"]').should('contain.text', '*')
+      })
+    })
+
+    it('flips data-invalid on the trigger when error is set', () => {
+      cy.mount(Combobox, {
+        props: { options: fruits, label: 'Fruit', error: 'Required' },
+      })
+      cy.get('[data-slot="trigger"]').should(
+        'have.attr',
+        'data-invalid',
+        'true',
+      )
+    })
+
+    it('button-mode trigger gets aria-invalid + data-invalid on error', () => {
+      cy.mount(Combobox, {
+        props: {
+          options: fruits,
+          label: 'Fruit',
+          error: 'Required',
+          trigger: 'button',
+        },
+      })
+      cy.get('[data-slot="trigger"]')
+        .should('have.attr', 'aria-invalid', 'true')
+        .and('have.attr', 'data-invalid', 'true')
     })
   })
 })

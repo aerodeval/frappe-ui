@@ -2,10 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-html {
-  scroll-behavior: smooth;
-}
-
 body {
   background-color: var(--surface-white);
   color: var(--ink-gray-9);
@@ -53,7 +49,7 @@ code {
 
 .shiki {
   @apply max-h-[500px] w-full overflow-auto leading-relaxed rounded;
-  @apply !p-5 !py-4 !bg-surface-gray-1 dark:!bg-transparent dark:border;
+  @apply !p-3 !py-3 sm:!p-5 sm:!py-4 !bg-surface-gray-1 dark:!bg-transparent dark:border;
 
   font-family: monospace;
   .line-number {
@@ -63,6 +59,12 @@ code {
   .highlighted {
     @apply bg-blue-900/30;
   }
+}
+
+/* shiki blocks rendered inside a component preview (no rounded corners,
+   no inner top border, since the wrapper already provides them) */
+.component-preview-code .shiki {
+  @apply !rounded-none dark:!border-0;
 }
 
 .shiki span {
@@ -148,4 +150,20 @@ code {
   font-optical-sizing: auto;
   font-style: normal;
   font-weight: 500;
+}
+
+/* Equal-width Before/After columns for the migration guide tables. */
+.migration-page table {
+  table-layout: fixed;
+  width: 100%;
+}
+.migration-page th,
+.migration-page td {
+  width: 50%;
+}
+
+/* The article's `prose-p:mb-4` leaks into editor previews (they escape `.not-prose`
+   to keep prose-v3). Restore prose-v3's zero paragraph margin inside the editor. */
+[data-slot='editor-content'] p {
+  margin-bottom: 0;
 }

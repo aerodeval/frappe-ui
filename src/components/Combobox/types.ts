@@ -1,4 +1,5 @@
 import type { Component, VNode, VNodeChild } from 'vue'
+import type { InputLabelingProps } from '../../composables/useInputLabeling'
 
 export type ComboboxVariant = 'subtle' | 'outline' | 'ghost'
 export type ComboboxSize = 'sm' | 'md' | 'lg' | 'xl'
@@ -38,9 +39,7 @@ export type ComboboxSelectableOption = {
   /** @deprecated use `slot` */
   slotName?: string
   /** @deprecated use `slots` — function form maps to `slots.item`, object form to `slots` */
-  render?:
-    | (() => VNode | VNode[])
-    | ComboboxItemSlots<ComboboxItemSlotProps>
+  render?: (() => VNode | VNode[]) | ComboboxItemSlots<ComboboxItemSlotProps>
   [key: string]: any
 }
 
@@ -66,9 +65,7 @@ export type ComboboxCustomOption = {
   keepOpen?: boolean
   condition?: (context: ComboboxCustomOptionContext) => boolean
   /** @deprecated use `slots` — function form maps to `slots.item`, object form to `slots` */
-  render?:
-    | (() => VNode | VNode[])
-    | ComboboxItemSlots<ComboboxItemSlotProps>
+  render?: (() => VNode | VNode[]) | ComboboxItemSlots<ComboboxItemSlotProps>
   [key: string]: any
 }
 
@@ -92,7 +89,7 @@ export interface ComboboxGroupedOption {
 export type GroupedOption = ComboboxGroupedOption
 export type ComboboxOption = ComboboxSimpleOption | ComboboxGroupedOption
 
-export interface ComboboxProps {
+export interface ComboboxProps extends InputLabelingProps {
   /** Options rendered in the popover. */
   options?: ComboboxOption[]
 
@@ -116,9 +113,6 @@ export interface ComboboxProps {
   /** Disables the combobox. */
   disabled?: boolean
 
-  /** Optional HTML id forwarded to the input element. */
-  id?: string
-
   /** Controls the popover visibility. */
   open?: boolean
 
@@ -140,7 +134,16 @@ export interface ComboboxProps {
   /** Teleport target for the popover content. */
   portalTo?: string | HTMLElement
 
-  /** Accepts the typed query as the value when nothing matches. */
+  /**
+   * Free-form acceptance: the typed query is accepted as the model value
+   * when nothing matches, and external `modelValue` updates with unknown
+   * strings are preserved. The combobox also renders a built-in "Create X"
+   * row as a click affordance.
+   *
+   * For richer create-new UX (custom label / icon / persistence callback),
+   * prefer a `type: 'custom'` option with `condition` instead — see the
+   * Create New story. The two are independent and can be combined.
+   */
   allowCustomValue?: boolean
 
   /** Replaces the results with a loading state. */
@@ -171,7 +174,23 @@ export interface ComboboxTriggerSlotProps {
 
   /** Resolved display text for the committed value. */
   displayValue: string
+
+  /** Clears the current selection (sets the model to `null`). */
+  clearSelection: () => void
+
+  /** Toggles the popover open state (no-op while disabled). */
+  toggleOpen: () => void
 }
+
+/**
+ * Shared shape for `#trigger`, `#prefix`, and `#suffix`. `selectedOption`
+ * is always `null` in `#prefix` because the prefix only renders before a
+ * selection — the field is still exposed for slot-prop symmetry across
+ * the trio.
+ */
+export type ComboboxSlotProps = ComboboxTriggerSlotProps
+export type ComboboxPrefixSlotProps = ComboboxSlotProps
+export type ComboboxSuffixSlotProps = ComboboxSlotProps
 
 export interface ComboboxItemSlotProps {
   /** Item currently being rendered. */
@@ -194,12 +213,39 @@ export interface ComboboxEmptySlotProps {
   query: string
 }
 
+export interface ComboboxFooterSlotProps {
+  /** Current search query — empty when the user hasn't typed since opening. */
+  query: string
+
+  /** Resolved selected option, if any. */
+  selectedOption: ComboboxSelectableOption | null
+
+  /** Clears the current selection (sets the model to `null`). */
+  clearSelection: () => void
+}
+
 export interface ComboboxSlots {
   /** Fully custom trigger renderer. */
   trigger?: (props: ComboboxTriggerSlotProps) => any
 
-  /** Content rendered before the default input. */
-  prefix?: () => any
+  /** Overrides the rendered label content. Receives `{ required }`. */
+  label?: (props: { required: boolean }) => any
+
+  /** Overrides the rendered description content. */
+  description?: () => any
+
+  /** Content rendered before the default input. Receives the same shape
+   * as `#trigger` and `#suffix` (`ComboboxSlotProps`). */
+  prefix?: (props: ComboboxPrefixSlotProps) => any
+
+  /**
+   * Content rendered after the input (input mode) or label (button mode).
+   * Providing this slot **replaces the default chevron** — render your
+   * own fallback (e.g. the chevron) when your slot content is conditional.
+   * Common use: an inline clear button. Use `@click.stop` and
+   * `@pointerdown.stop` so the press doesn't toggle the popover.
+   */
+  suffix?: (props: ComboboxSuffixSlotProps) => any
 
   /** Shared content rendered before the standard row label. */
   'item-prefix'?: (props: ComboboxItemSlotProps) => any
@@ -219,8 +265,9 @@ export interface ComboboxSlots {
   /** Fallback content rendered when there are no results. */
   empty?: (props: ComboboxEmptySlotProps) => any
 
-  /** Content rendered after the list. */
-  footer?: () => any
+  /** Content rendered after the list. Stays pinned below the scrollable
+   * options. */
+  footer?: (props: ComboboxFooterSlotProps) => any
 
   [slotName: string]: ((props: any) => any) | undefined
 }
@@ -249,4 +296,5 @@ export interface ComboboxEmits {
 
 export interface ComboboxExposed {
   reset: () => void
+  focus: () => void
 }

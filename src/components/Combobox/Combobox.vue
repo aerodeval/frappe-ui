@@ -15,19 +15,28 @@ import {
   ComboboxPortal,
   ComboboxRoot,
   ComboboxTrigger,
+  FocusScope,
 } from 'reka-ui'
 import OptionIcon from '../shared/selection/OptionIcon.vue'
 import '../shared/selection/popoverMotion.css'
 import ComboboxResults from './ComboboxResults.vue'
 import { usePopoverMotion } from '../../composables/usePopoverMotion'
+import { useInputLabeling } from '../../composables/useInputLabeling'
 import { useEmptyValueMapping } from '../shared/selection/useEmptyValueMapping'
 import { useFilteredGroups } from '../shared/selection/useFilteredGroups'
+import {
+  InputDescription,
+  InputError,
+  InputLabel,
+  LabelingWrapper,
+} from '../InputLabeling'
 import type {
   ComboboxEmits,
   ComboboxExposed,
   ComboboxProps,
   ComboboxSelectableOption,
   ComboboxSlots,
+  ComboboxTriggerSlotProps,
 } from './types'
 import {
   buildCustomOptionContext,
@@ -59,7 +68,7 @@ const props = withDefaults(defineProps<ComboboxProps>(), {
   placeholder: 'Select option',
   disabled: false,
   openOnFocus: false,
-  openOnClick: false,
+  openOnClick: true,
   side: 'bottom',
   offset: 4,
   portalTo: 'body',
@@ -83,6 +92,38 @@ const hasWarnedPlacement = ref(false)
 
 const { motion: contentMotion, onPointerDown: markPointerDown } =
   usePopoverMotion(open)
+
+const {
+  inputId,
+  labelId,
+  descriptionId,
+  errorMessageId,
+  describedBy,
+  hasError,
+  errorLines,
+  showDescription,
+} = useInputLabeling(props, {
+  size: () => props.size,
+  variant: () => props.variant,
+  disabled: () => props.disabled,
+})
+
+const hasLabeling = computed(() => {
+  return Boolean(
+    props.label ||
+      props.description ||
+      hasError.value ||
+      slots.label ||
+      slots.description,
+  )
+})
+
+const inputAriaAttrs = computed(() => ({
+  'aria-invalid': hasError.value || undefined,
+  'aria-errormessage': hasError.value ? errorMessageId.value : undefined,
+  'aria-describedby': describedBy.value,
+  'aria-required': props.required || undefined,
+}))
 
 const inputAttrs = computed(() => {
   const { class: _class, style: _style, autocomplete, ...rest } = attrs
@@ -177,10 +218,14 @@ const filteredGroups = useFilteredGroups({
   open,
   hasTypedSinceOpen,
   query,
+  // Selectable rows: query-driven substring match. Custom rows: skip here
+  // and let `alwaysMatch` consult `condition` so the row's visibility is
+  // bespoke (works even before the user types, when the typed-query path
+  // is otherwise bypassed).
   matches: (item, q) =>
-    item.type === 'custom'
-      ? matchesCustomOption(item, q)
-      : matchesSelectableOption(item, q),
+    item.type === 'custom' ? true : matchesSelectableOption(item, q),
+  alwaysMatch: (item) =>
+    item.type !== 'custom' || matchesCustomOption(item, typedQuery.value),
 })
 
 const hasVisibleItems = computed(() => filteredGroups.value.length > 0)
@@ -202,6 +247,26 @@ function clearSelection() {
   model.value = null
   emit('update:selectedOption', null)
 }
+
+function toggleOpen() {
+  if (props.disabled) return
+  open.value = !open.value
+}
+
+// Shared shape for the #trigger, #prefix, and #suffix slots. `clearSelection`
+// and `toggleOpen` are exposed alongside the read-only fields so consumers
+// can wire clear / open affordances (e.g. a custom #trigger or an inline
+// button in #suffix) without hoisting into #trigger or managing the model
+// and open state themselves.
+const triggerSlotProps = computed<ComboboxTriggerSlotProps>(() => ({
+  open: open.value,
+  disabled: Boolean(props.disabled),
+  query: typedQuery.value,
+  selectedOption: selectedOption.value,
+  displayValue: displayValue.value,
+  clearSelection,
+  toggleOpen,
+}))
 
 function commitSelectableOption(value: string) {
   const option =
@@ -285,19 +350,16 @@ function handleCreateOptionSelect(event: Event) {
   commitCustomValue(query.value)
 }
 
-// When a custom trigger is used, move focus to the search input inside the
-// popover as it opens. reka's default `openAutoFocus` would put focus on
-// the first item; we want the user typing to filter, not navigate.
-const popoverInputRef = ref<{ $el?: HTMLElement } | null>(null)
-
-function handleContentOpenAutoFocus(event: Event) {
-  event.preventDefault()
-  if (!isButtonMode.value) return
-
-  nextTick(() => {
-    const el = popoverInputRef.value?.$el as HTMLElement | undefined
-    el?.focus()
-  })
+function handleFocusScopeMountAutoFocus(event: Event) {
+  // In input mode the trigger is the search input — keep focus there so the
+  // user can keep typing. FocusScope's default would yank focus to the first
+  // tabbable inside the popover (an item).
+  // In button mode, let FocusScope's default run: it focuses the first
+  // tabbable inside the popover (our search input). Critically, this fires
+  // AFTER FocusScope adds itself to the focus-scope stack, so it works even
+  // when the Combobox is rendered inside a Dialog whose FocusScope is
+  // trapping focus.
+  if (!isButtonMode.value) event.preventDefault()
 }
 
 function reset() {
@@ -306,6 +368,12 @@ function reset() {
   model.value = null
   emit('update:query', '')
   emit('update:selectedOption', null)
+}
+
+function focus() {
+  const id = isButtonMode.value ? `${inputId.value}-search-input` : inputId.value
+  const el = document.getElementById(id) as HTMLInputElement | null
+  el?.focus()
 }
 
 watch(
@@ -344,11 +412,36 @@ watch(open, (isOpen, wasOpen) => {
   query.value = isButtonMode.value ? '' : displayValue.value
 })
 
-defineExpose<ComboboxExposed>({ reset })
+defineExpose<ComboboxExposed>({ reset, focus })
 defineSlots<ComboboxSlots>()
 </script>
 
 <template>
+  <LabelingWrapper
+    :enabled="hasLabeling"
+    :wrapper-class="['space-y-1.5', attrs.class as any]"
+    :wrapper-style="attrs.style as any"
+  >
+    <InputLabel
+      v-if="label || $slots.label"
+      :id="labelId"
+      :for-id="inputId"
+      :label="label"
+      :required="required"
+      class="text-p-sm font-medium text-ink-gray-7"
+    >
+      <template v-if="$slots.label" #default="slotProps">
+        <slot name="label" v-bind="slotProps" />
+      </template>
+    </InputLabel>
+    <!--
+      ComboboxRoot uses `display: contents` so it's invisible to layout —
+      space-y-1.5 on LabelingWrapper would try to attach margin-top to it
+      and the rule gets dropped, collapsing the gap between label and
+      trigger. Wrap in a div that drops back to `display: contents` when
+      there's no labeling, so bare usage keeps its flattened layout.
+    -->
+    <div :class="hasLabeling ? null : 'contents'">
   <ComboboxRoot
     ref="rootRef"
     class="contents"
@@ -383,19 +476,13 @@ defineSlots<ComboboxSlots>()
       -->
       <ComboboxAnchor
         as-child
-        @click="open = !open"
+        @click="toggleOpen"
         @pointerdown="markPointerDown"
       >
         <slot
           v-if="$slots.trigger"
           name="trigger"
-          v-bind="{
-            open,
-            disabled: !!disabled,
-            query: typedQuery,
-            selectedOption,
-            displayValue,
-          }"
+          v-bind="triggerSlotProps"
         />
 
         <!--
@@ -413,17 +500,21 @@ defineSlots<ComboboxSlots>()
             triggerClasses,
             'justify-between',
             disabled && 'cursor-not-allowed',
-            attrs.class,
+            hasLabeling ? 'w-full' : null,
+            hasLabeling ? null : (attrs.class as any),
           ]"
-          :style="attrs.style as any"
+          :style="hasLabeling ? null : (attrs.style as any)"
           :disabled="disabled"
           data-slot="trigger"
           :data-state="open ? 'open' : 'closed'"
           :data-variant="variant"
           :data-size="size"
-          :id="id"
+          :data-invalid="hasError ? 'true' : undefined"
+          :data-required="required ? 'true' : undefined"
+          :id="inputId"
           aria-haspopup="listbox"
           :aria-expanded="open"
+          v-bind="inputAriaAttrs"
         >
           <!--
             Prefix precedence on the trigger:
@@ -448,7 +539,11 @@ defineSlots<ComboboxSlots>()
             v-else-if="selectedOption?.icon"
             :icon="selectedOption.icon"
           />
-          <slot v-else-if="!selectedOption && $slots.prefix" name="prefix" />
+          <slot
+            v-else-if="!selectedOption && $slots.prefix"
+            name="prefix"
+            v-bind="triggerSlotProps"
+          />
 
           <span
             :class="[
@@ -459,12 +554,17 @@ defineSlots<ComboboxSlots>()
             {{ selectedOption?.label ?? placeholder }}
           </span>
 
-          <span
-            :class="[
-              'lucide-chevron-down size-4 shrink-0 text-ink-gray-4 transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]',
-              open && 'rotate-180',
-            ]"
-          />
+          <slot
+            name="suffix"
+            v-bind="triggerSlotProps"
+          >
+            <span
+              :class="[
+                'lucide-chevron-down size-4 shrink-0 text-ink-gray-4 transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]',
+                open && 'rotate-180',
+              ]"
+            />
+          </slot>
         </button>
       </ComboboxAnchor>
     </template>
@@ -476,8 +576,14 @@ defineSlots<ComboboxSlots>()
         :data-disabled="disabled ? '' : undefined"
         :data-variant="variant"
         :data-size="size"
-        :class="[triggerClasses, attrs.class]"
-        :style="attrs.style"
+        :data-invalid="hasError ? 'true' : undefined"
+        :data-required="required ? 'true' : undefined"
+        :class="[
+          triggerClasses,
+          hasLabeling ? 'w-full' : null,
+          hasLabeling ? null : (attrs.class as any),
+        ]"
+        :style="hasLabeling ? null : (attrs.style as any)"
         @pointerdown="markPointerDown"
       >
         <!--
@@ -495,11 +601,15 @@ defineSlots<ComboboxSlots>()
           v-else-if="selectedOption?.icon"
           :icon="selectedOption.icon"
         />
-        <slot v-else name="prefix" />
+        <slot
+          v-else
+          name="prefix"
+          v-bind="triggerSlotProps"
+        />
 
         <ComboboxInput
-          :id="id"
-          v-bind="inputAttrs"
+          :id="inputId"
+          v-bind="{ ...inputAttrs, ...inputAriaAttrs }"
           data-slot="input"
           :data-variant="variant"
           :data-size="size"
@@ -513,13 +623,18 @@ defineSlots<ComboboxSlots>()
           @keydown.enter="handleInputEnter"
         />
 
-        <ComboboxTrigger
-          :disabled="disabled"
-          data-slot="chevron"
-          class="ml-auto inline-flex shrink-0 items-center justify-center text-ink-gray-4 outline-none transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] data-[state=open]:rotate-180"
+        <slot
+          name="suffix"
+          v-bind="triggerSlotProps"
         >
-          <span class="lucide-chevron-down size-4 text-ink-gray-6" />
-        </ComboboxTrigger>
+          <ComboboxTrigger
+            :disabled="disabled"
+            data-slot="chevron"
+            class="inline-flex shrink-0 items-center justify-center text-ink-gray-4 outline-none transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] data-[state=open]:rotate-180"
+          >
+            <span class="lucide-chevron-down size-4 text-ink-gray-6" />
+          </ComboboxTrigger>
+        </slot>
       </ComboboxAnchor>
     </template>
 
@@ -537,53 +652,98 @@ defineSlots<ComboboxSlots>()
         :side="side"
         :align="resolvedAlign"
         :side-offset="offset"
-        @openAutoFocus="handleContentOpenAutoFocus"
-        @closeAutoFocus.prevent
       >
-        <div
-          data-slot="content-body"
-          :data-motion="contentMotion"
-          class="overflow-hidden rounded-lg bg-surface-modal shadow-2xl ring-1 ring-black ring-opacity-5"
+        <!--
+          Why FocusScope lives here (inside ComboboxContent) and not around it:
+
+          ComboboxContent is a <Presence> wrapper — it renders null when the
+          popover is closed. Placing FocusScope outside with `as-child` means
+          its container is null while closed, so it never registers on reka's
+          global focus-scope stack, and the fix has no effect.
+
+          By sitting on the always-present content-body div, FocusScope mounts
+          the moment the popover opens. It pushes itself onto the stack, which
+          pauses any parent Dialog's trapped FocusScope. That allows focus to
+          move freely into the portaled popover.
+
+          Why we don't prevent mountAutoFocus (in button mode):
+          ComboboxContentImpl.onMounted synchronously calls inputElement.focus()
+          before our FocusScope has had a chance to register — the dialog trap
+          immediately reverts it. FocusScope's own auto-focus fires after the
+          stack push, so it re-focuses the first tabbable (the search input)
+          once the dialog trap is paused. In input mode we prevent it so the
+          trigger input keeps focus while the list opens.
+        -->
+        <FocusScope
+          as-child
+          @mount-auto-focus="handleFocusScopeMountAutoFocus"
+          @unmount-auto-focus.prevent
         >
           <div
-            v-if="isButtonMode"
-            data-slot="content-search"
-            class="flex items-center gap-2 border-b border-outline-gray-1 px-3"
+            data-slot="content-body"
+            :data-motion="contentMotion"
+            class="overflow-hidden rounded-lg bg-surface-modal shadow-2xl ring-1 ring-black ring-opacity-5"
           >
-            <ComboboxInput
-              :id="id"
-              ref="popoverInputRef"
-              v-bind="inputAttrs"
-              data-slot="input"
-              :value="query"
-              :disabled="disabled"
-              :placeholder="placeholder"
-              class="min-w-0 flex-1 px-0 border-0 bg-transparent py-2 text-base text-ink-gray-8 outline-none placeholder:text-ink-gray-4 focus:ring-0"
-              @input="handleInputChange"
-              @focus="emit('focus', $event)"
-              @blur="emit('blur', $event)"
-              @keydown.enter="handleInputEnter"
-            />
-          </div>
+            <div
+              v-if="isButtonMode"
+              data-slot="content-search"
+              class="flex items-center gap-2 border-b border-outline-gray-1 px-3"
+            >
+              <ComboboxInput
+                :id="`${inputId}-search-input`"
+                v-bind="inputAttrs"
+                data-slot="input"
+                :value="query"
+                :disabled="disabled"
+                :placeholder="placeholder"
+                class="min-w-0 flex-1 px-0 border-0 bg-transparent py-2 text-base text-ink-gray-8 outline-none placeholder:text-ink-gray-4 focus:ring-0"
+                @input="handleInputChange"
+                @focus="emit('focus', $event)"
+                @blur="emit('blur', $event)"
+                @keydown.enter="handleInputEnter"
+              />
+            </div>
 
-          <ComboboxResults
-            :groups="filteredGroups"
-            :size="size"
-            :query="typedQuery"
-            :model="model ?? null"
-            :loading="loading"
-            :empty-text="emptyText"
-            :show-create-option="showCreateOption"
-            :show-empty="showEmpty"
-            :slot-fns="slots"
-            :all-selectable-options="allSelectableOptions"
-            @select-custom="handleCustomItemSelect"
-            @select-create="handleCreateOptionSelect"
-          />
-        </div>
+            <ComboboxResults
+              :groups="filteredGroups"
+              :size="size"
+              :query="typedQuery"
+              :model="model ?? null"
+              :loading="loading"
+              :empty-text="emptyText"
+              :show-create-option="showCreateOption"
+              :show-empty="showEmpty"
+              :slot-fns="slots"
+              :all-selectable-options="allSelectableOptions"
+              @select-custom="handleCustomItemSelect"
+              @select-create="handleCreateOptionSelect"
+            />
+
+            <div v-if="$slots.footer" data-slot="footer">
+              <slot
+                name="footer"
+                v-bind="{
+                  query: typedQuery,
+                  selectedOption,
+                  clearSelection,
+                }"
+              />
+            </div>
+          </div>
+        </FocusScope>
       </ComboboxContent>
     </ComboboxPortal>
   </ComboboxRoot>
+    </div>
+    <InputDescription
+      v-if="showDescription || $slots.description"
+      :id="descriptionId"
+      :description="description"
+    >
+      <slot v-if="$slots.description" name="description" />
+    </InputDescription>
+    <InputError v-if="hasError" :id="errorMessageId" :lines="errorLines" />
+  </LabelingWrapper>
 </template>
 
 <style scoped>

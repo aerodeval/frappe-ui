@@ -1,68 +1,60 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { TabButtons } from 'frappe-ui'
+import { computed, ref } from 'vue'
+import { Button } from 'frappe-ui'
 
 interface ComponentPreviewProps {
   name: string
-  css?: string
-  /**
-   * `tabs` (default): preview and code in a tab switcher.
-   * `stacked`: preview on top, code directly below — shown together.
-   */
-  layout?: 'tabs' | 'stacked'
 }
 
-const props = withDefaults(defineProps<ComponentPreviewProps>(), {
-  layout: 'tabs',
-})
+const props = defineProps<ComponentPreviewProps>()
 
-const activeTab = ref('preview')
+const expanded = ref(false)
 
-const previewTabs = [
-  { label: 'Preview', value: 'preview' },
-  { label: 'Code', value: 'code' },
-]
+// The editor renders its own `prose prose-v3` content, but Tailwind Typography's
+// `.not-prose` (used here to shield demos from the docs article's prose) also
+// suppresses prose *inside* it — and you can't re-enable it deeper in the tree.
+// So editor demos opt their preview out of `.not-prose`; every other demo keeps
+// the isolation unchanged.
+const isEditorDemo = computed(() => props.name?.startsWith('Editor'))
 </script>
 
 <template>
-  <div class="grid not-prose">
-    <template v-if="props.layout === 'stacked'">
+  <div>
+    <div
+      class="rounded-xl overflow-hidden border border-outline-gray-1 divide-y divide-outline-gray-1"
+    >
       <div
-        class="rounded-xl overflow-hidden border border-outline-gray-1 divide-y divide-outline-gray-1"
+        :class="[
+          isEditorDemo ? '' : 'not-prose',
+          'bg-surface-white p-4 sm:p-8 overflow-x-auto scrollbar flex flex-wrap gap-3 items-center justify-center min-h-[200px]',
+        ]"
       >
+        <slot />
+      </div>
+
+      <div class="component-preview-code not-prose relative">
         <div
           :class="[
-            'bg-surface-white p-8 overflow-auto scrollbar flex gap-3 items-center',
-            css,
+            expanded
+              ? ''
+              : 'max-h-[80px] sm:max-h-[96px] overflow-hidden [&_.shiki]:!max-h-none [&_.shiki]:!overflow-hidden [&_.copy]:hidden',
           ]"
         >
-          <slot />
-        </div>
-
-        <div>
           <slot name="code" />
         </div>
-      </div>
-    </template>
 
-    <template v-else>
-      <TabButtons :buttons="previewTabs" v-model="activeTab" />
-      <div class="mt-2 rounded-xl overflow-hidden border border-outline-gray-1">
-        <div v-if="activeTab === 'preview'">
-          <div
-            :class="[
-              'bg-surface-white p-8 overflow-auto scrollbar flex gap-3 items-center',
-              css,
-            ]"
-          >
-            <slot />
-          </div>
-        </div>
+        <div
+          v-if="!expanded"
+          class="pointer-events-none absolute inset-0 bg-gradient-to-t from-surface-gray-1 via-surface-gray-1/70 dark:from-surface-white dark:via-surface-white/70 to-transparent"
+        />
 
-        <div v-else>
-          <slot name="code" />
+        <div
+          v-if="!expanded"
+          class="absolute inset-0 flex items-center justify-center"
+        >
+          <Button variant="outline" @click="expanded = true">View Code</Button>
         </div>
       </div>
-    </template>
+    </div>
   </div>
 </template>
